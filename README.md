@@ -243,7 +243,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 👨‍💻 Author
 
-**Chetan** - [chetx27](https://github.com/chetx27)
+**Chetana G** - [chetx27](https://github.com/chetx27)
 
 - Engineering Student at Cambridge Institute of Technology
 - Full-stack Web Developer
@@ -254,9 +254,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - React team for the amazing framework
 - Canvas API documentation contributors
 - Open source community for inspiration
-- ETH Zurich for academic standards inspiration
 
-## 📚 Documentation
+## Documentation
 
 - [Architecture Documentation](docs/ARCHITECTURE.md)
 - [Algorithm Explanations](docs/ALGORITHMS.md)
@@ -285,4 +284,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **Star ⭐ this repository if you find it helpful!**
 
-Made with ❤️ and React
+Thanks!

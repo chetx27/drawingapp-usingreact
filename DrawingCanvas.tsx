@@ -14,12 +14,11 @@ interface Point {
 }
 
 /**
- * Drawing state interface for history management with differential encoding
+ * Drawing state interface for history management
  */
 interface DrawingState {
   imageData: ImageData;
   timestamp: number;
-  bounds?: { x: number; y: number; width: number; height: number };
 }
 
 /**
@@ -35,13 +34,13 @@ interface DrawingCanvasProps {
  * Advanced Drawing Canvas Component
  * 
  * Features:
- * - Multiple drawing tools with optimized rendering
- * - Undo/Redo with memory-efficient history
- * - Full accessibility support (WCAG 2.1 AA)
- * - Touch and mouse support with debounced rendering
- * - Keyboard shortcuts and navigation
- * - Performance optimized for low-memory devices
- * - High contrast mode support
+ * - Multiple drawing tools (brush, eraser, shapes)
+ * - Undo/Redo functionality with history stack
+ * - Recent colors history for quick access
+ * - Export to PNG/SVG
+ * - Touch and mouse support
+ * - Keyboard shortcuts
+ * - Performance optimized rendering
  */
 const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   width = 1200,
@@ -50,16 +49,14 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 }) => {
   // Canvas references
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
-  const previewCtxRef = useRef<CanvasRenderingContext2D | null>(null);
   
   // Drawing state
   const [isDrawing, setIsDrawing] = useState(false);
   const [tool, setTool] = useState<Tool>('brush');
   const [color, setColor] = useState('#000000');
   const [lineWidth, setLineWidth] = useState(5);
-  const [announcement, setAnnouncement] = useState('');
+  const [recentColors, setRecentColors] = useState<string[]>([]);
   
   // History management
   const [history, setHistory] = useState<DrawingState[]>([]);
@@ -67,57 +64,35 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   
   // Shape drawing state
   const [startPoint, setStartPoint] = useState<Point | null>(null);
-  const pathPoints = useRef<Point[]>([]);
-  const animationFrameId = useRef<number | null>(null);
+  const tempCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   /**
-   * Initialize canvas and context with proper scaling for high DPI displays
+   * Initialize canvas and context
    */
   useEffect(() => {
     const canvas = canvasRef.current;
-    const previewCanvas = previewCanvasRef.current;
-    if (!canvas || !previewCanvas) return;
+    if (!canvas) return;
 
-    // Handle high DPI displays
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
+    canvas.width = width;
+    canvas.height = height;
     
-    previewCanvas.width = width * dpr;
-    previewCanvas.height = height * dpr;
-    previewCanvas.style.width = `${width}px`;
-    previewCanvas.style.height = `${height}px`;
-    
-    const ctx = canvas.getContext('2d', { willReadFrequently: false, alpha: false });
-    const previewCtx = previewCanvas.getContext('2d', { willReadFrequently: false });
-    
-    if (!ctx || !previewCtx) return;
-    
-    // Scale for high DPI
-    ctx.scale(dpr, dpr);
-    previewCtx.scale(dpr, dpr);
-    
-    // Set white background
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, width, height);
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
     
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = color;
     ctx.lineWidth = lineWidth;
     ctxRef.current = ctx;
-    previewCtxRef.current = previewCtx;
+
+    // Create temporary canvas for shape preview
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = width;
+    tempCanvas.height = height;
+    tempCanvasRef.current = tempCanvas;
 
     // Save initial state
     saveToHistory();
-
-    return () => {
-      if (animationFrameId.current) {
-        cancelAnimationFrame(animationFrameId.current);
-      }
-    };
   }, []);
 
   /**
@@ -129,29 +104,37 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       ctxRef.current.fillStyle = color;
       ctxRef.current.lineWidth = lineWidth;
     }
-    if (previewCtxRef.current) {
-      previewCtxRef.current.strokeStyle = color;
-      previewCtxRef.current.fillStyle = color;
-      previewCtxRef.current.lineWidth = lineWidth;
-    }
   }, [color, lineWidth]);
 
   /**
-   * Announce to screen readers
+   * Add color to recent colors history
    */
-  const announce = useCallback((message: string) => {
-    setAnnouncement(message);
-    setTimeout(() => setAnnouncement(''), 100);
+  const addToRecentColors = useCallback((newColor: string) => {
+    setRecentColors((prev) => {
+      // Don't add if it's already the most recent color
+      if (prev[0] === newColor) return prev;
+      
+      // Remove the color if it exists elsewhere in the array
+      const filtered = prev.filter(c => c !== newColor);
+      
+      // Add to the beginning and keep only last 8 colors
+      return [newColor, ...filtered].slice(0, 8);
+    });
   }, []);
+
+  /**
+   * Handle color change
+   */
+  const handleColorChange = (newColor: string) => {
+    setColor(newColor);
+    addToRecentColors(newColor);
+  };
 
   /**
    * Keyboard shortcuts handler
    */
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Prevent shortcuts when typing in inputs
-      if (e.target instanceof HTMLInputElement) return;
-
       if (e.ctrlKey || e.metaKey) {
         if (e.key === 'z' && !e.shiftKey) {
           e.preventDefault();
@@ -166,19 +149,13 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       }
       
       // Tool shortcuts
-      const toolMap: Record<string, Tool> = {
-        'b': 'brush',
-        'e': 'eraser',
-        'r': 'rectangle',
-        'c': 'circle',
-        'l': 'line',
-        'f': 'fill'
-      };
-      
-      const newTool = toolMap[e.key.toLowerCase()];
-      if (newTool) {
-        setTool(newTool);
-        announce(`${newTool} tool selected`);
+      switch(e.key.toLowerCase()) {
+        case 'b': setTool('brush'); break;
+        case 'e': setTool('eraser'); break;
+        case 'r': setTool('rectangle'); break;
+        case 'c': setTool('circle'); break;
+        case 'l': setTool('line'); break;
+        case 'f': setTool('fill'); break;
       }
     };
 
@@ -187,20 +164,19 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   }, [historyStep]);
 
   /**
-   * Save current canvas state to history with memory optimization
+   * Save current canvas state to history
    */
   const saveToHistory = useCallback(() => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current;
     if (!canvas || !ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const newHistory = history.slice(0, historyStep + 1);
     newHistory.push({ imageData, timestamp: Date.now() });
     
-    // Limit history to 30 steps for better memory management
-    if (newHistory.length > 30) {
+    // Limit history to 50 steps for performance
+    if (newHistory.length > 50) {
       newHistory.shift();
     } else {
       setHistoryStep(historyStep + 1);
@@ -221,9 +197,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       const prevStep = historyStep - 1;
       ctx.putImageData(history[prevStep].imageData, 0, 0);
       setHistoryStep(prevStep);
-      announce('Undo performed');
     }
-  }, [history, historyStep, announce]);
+  }, [history, historyStep]);
 
   /**
    * Redo last undone action
@@ -237,31 +212,28 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
       const nextStep = historyStep + 1;
       ctx.putImageData(history[nextStep].imageData, 0, 0);
       setHistoryStep(nextStep);
-      announce('Redo performed');
     }
-  }, [history, historyStep, announce]);
+  }, [history, historyStep]);
 
   /**
-   * Get mouse/touch coordinates relative to canvas with DPI correction
+   * Get mouse/touch coordinates relative to canvas
    */
   const getCoordinates = (event: React.MouseEvent | React.TouchEvent): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
 
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
     
     if ('touches' in event) {
       const touch = event.touches[0];
       return {
-        x: (touch.clientX - rect.left) * scaleX / (window.devicePixelRatio || 1),
-        y: (touch.clientY - rect.top) * scaleY / (window.devicePixelRatio || 1)
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top
       };
     } else {
       return {
-        x: (event.clientX - rect.left) * scaleX / (window.devicePixelRatio || 1),
-        y: (event.clientY - rect.top) * scaleY / (window.devicePixelRatio || 1)
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
       };
     }
   };
@@ -277,7 +249,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     setIsDrawing(true);
     setStartPoint(point);
-    pathPoints.current = [point];
 
     if (tool === 'brush' || tool === 'eraser') {
       ctx.globalCompositeOperation = tool === 'eraser' ? 'destination-out' : 'source-over';
@@ -287,117 +258,102 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   /**
-   * Debounced draw function using requestAnimationFrame for smooth rendering
+   * Draw on canvas based on selected tool
    */
   const draw = (event: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing) return;
     event.preventDefault();
     
     const point = getCoordinates(event);
-    pathPoints.current.push(point);
+    const ctx = ctxRef.current;
+    const canvas = canvasRef.current;
+    if (!ctx || !canvas) return;
 
-    if (animationFrameId.current) {
-      return; // Already scheduled
+    if (tool === 'brush' || tool === 'eraser') {
+      ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+    } else if (startPoint) {
+      // Preview shapes on temporary canvas
+      drawShapePreview(startPoint, point);
     }
-
-    animationFrameId.current = requestAnimationFrame(() => {
-      const ctx = ctxRef.current;
-      const previewCtx = previewCtxRef.current;
-      if (!ctx || !previewCtx) return;
-
-      if (tool === 'brush' || tool === 'eraser') {
-        // Draw accumulated points
-        pathPoints.current.forEach((p, index) => {
-          if (index === 0) {
-            ctx.beginPath();
-            ctx.moveTo(p.x, p.y);
-          } else {
-            ctx.lineTo(p.x, p.y);
-          }
-        });
-        ctx.stroke();
-        pathPoints.current = [pathPoints.current[pathPoints.current.length - 1]];
-      } else if (startPoint) {
-        // Preview shapes on overlay canvas
-        drawShapePreview(startPoint, point);
-      }
-
-      animationFrameId.current = null;
-    });
   };
 
   /**
-   * Draw shape preview on overlay canvas
+   * Draw shape preview
    */
   const drawShapePreview = (start: Point, end: Point) => {
-    const previewCanvas = previewCanvasRef.current;
-    const previewCtx = previewCtxRef.current;
-    if (!previewCanvas || !previewCtx) return;
+    const canvas = canvasRef.current;
+    const ctx = ctxRef.current;
+    const tempCanvas = tempCanvasRef.current;
+    if (!canvas || !ctx || !tempCanvas) return;
 
-    // Clear preview canvas
-    previewCtx.clearRect(0, 0, width, height);
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return;
+
+    // Clear temporary canvas
+    tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
     
-    previewCtx.strokeStyle = color;
-    previewCtx.fillStyle = color;
-    previewCtx.lineWidth = lineWidth;
-    previewCtx.beginPath();
+    // Copy current canvas to temp
+    const currentState = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    ctx.putImageData(currentState, 0, 0);
+
+    // Draw preview
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.beginPath();
 
     switch(tool) {
       case 'line':
-        previewCtx.moveTo(start.x, start.y);
-        previewCtx.lineTo(end.x, end.y);
+        ctx.moveTo(start.x, start.y);
+        ctx.lineTo(end.x, end.y);
         break;
       
       case 'rectangle':
-        const rectWidth = end.x - start.x;
-        const rectHeight = end.y - start.y;
-        previewCtx.rect(start.x, start.y, rectWidth, rectHeight);
+        const width = end.x - start.x;
+        const height = end.y - start.y;
+        ctx.rect(start.x, start.y, width, height);
         break;
       
       case 'circle':
         const radius = Math.sqrt(
           Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2)
         );
-        previewCtx.arc(start.x, start.y, radius, 0, 2 * Math.PI);
+        ctx.arc(start.x, start.y, radius, 0, 2 * Math.PI);
         break;
     }
 
-    previewCtx.stroke();
+    ctx.stroke();
   };
 
   /**
-   * Optimized flood fill algorithm with boundary checking
+   * Flood fill algorithm implementation
    */
   const floodFill = (startX: number, startY: number) => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current;
     if (!canvas || !ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const pixels = imageData.data;
-    const targetColor = getPixelColor(pixels, Math.floor(startX), Math.floor(startY), width * dpr);
+    const targetColor = getPixelColor(pixels, startX, startY, canvas.width);
     const fillColor = hexToRgb(color);
 
     if (colorsMatch(targetColor, fillColor)) return;
 
-    const stack: Point[] = [{ x: Math.floor(startX), y: Math.floor(startY) }];
+    const stack: Point[] = [{ x: startX, y: startY }];
     const visited = new Set<string>();
-    const maxIterations = width * height * dpr * dpr;
-    let iterations = 0;
 
-    while (stack.length > 0 && iterations < maxIterations) {
-      iterations++;
+    while (stack.length > 0) {
       const { x, y } = stack.pop()!;
       const key = `${x},${y}`;
       
       if (visited.has(key)) continue;
-      if (x < 0 || x >= width * dpr || y < 0 || y >= height * dpr) continue;
+      if (x < 0 || x >= canvas.width || y < 0 || y >= canvas.height) continue;
 
-      const currentColor = getPixelColor(pixels, x, y, width * dpr);
+      const currentColor = getPixelColor(pixels, x, y, canvas.width);
       if (!colorsMatch(currentColor, targetColor)) continue;
 
-      setPixelColor(pixels, x, y, width * dpr, fillColor);
+      setPixelColor(pixels, x, y, canvas.width, fillColor);
       visited.add(key);
 
       stack.push({ x: x + 1, y });
@@ -408,7 +364,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     ctx.putImageData(imageData, 0, 0);
     saveToHistory();
-    announce('Fill applied');
   };
 
   /**
@@ -462,53 +417,21 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   };
 
   /**
-   * Finish drawing and commit to main canvas
+   * Finish drawing
    */
   const finishDrawing = () => {
     if (!isDrawing) return;
     
     const ctx = ctxRef.current;
-    const previewCtx = previewCtxRef.current;
-    if (!ctx || !previewCtx) return;
+    if (!ctx) return;
 
     if (tool === 'brush' || tool === 'eraser') {
       ctx.closePath();
       ctx.globalCompositeOperation = 'source-over';
-    } else if (startPoint && pathPoints.current.length > 0) {
-      // Commit shape from preview to main canvas
-      const endPoint = pathPoints.current[pathPoints.current.length - 1];
-      ctx.beginPath();
-      
-      switch(tool) {
-        case 'line':
-          ctx.moveTo(startPoint.x, startPoint.y);
-          ctx.lineTo(endPoint.x, endPoint.y);
-          ctx.stroke();
-          break;
-        
-        case 'rectangle':
-          const rectWidth = endPoint.x - startPoint.x;
-          const rectHeight = endPoint.y - startPoint.y;
-          ctx.rect(startPoint.x, startPoint.y, rectWidth, rectHeight);
-          ctx.stroke();
-          break;
-        
-        case 'circle':
-          const radius = Math.sqrt(
-            Math.pow(endPoint.x - startPoint.x, 2) + Math.pow(endPoint.y - startPoint.y, 2)
-          );
-          ctx.arc(startPoint.x, startPoint.y, radius, 0, 2 * Math.PI);
-          ctx.stroke();
-          break;
-      }
-      
-      // Clear preview
-      previewCtx.clearRect(0, 0, width, height);
     }
 
     setIsDrawing(false);
     setStartPoint(null);
-    pathPoints.current = [];
     saveToHistory();
   };
 
@@ -516,9 +439,9 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
    * Handle canvas click for fill tool
    */
   const handleCanvasClick = (event: React.MouseEvent) => {
-    if (tool === 'fill' && !isDrawing) {
+    if (tool === 'fill') {
       const point = getCoordinates(event);
-      floodFill(point.x, point.y);
+      floodFill(Math.floor(point.x), Math.floor(point.y));
     }
   };
 
@@ -528,14 +451,10 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
   const clearCanvas = () => {
     const canvas = canvasRef.current;
     const ctx = ctxRef.current;
-    const previewCtx = previewCtxRef.current;
-    if (!canvas || !ctx || !previewCtx) return;
+    if (!canvas || !ctx) return;
 
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, width, height);
-    previewCtx.clearRect(0, 0, width, height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     saveToHistory();
-    announce('Canvas cleared');
   };
 
   /**
@@ -552,7 +471,6 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     link.click();
     
     if (onSave) onSave(dataUrl);
-    announce('Drawing exported as PNG');
   };
 
   /**
@@ -564,8 +482,8 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
     const dataUrl = canvas.toDataURL('image/png');
     const svg = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
-        <image href="${dataUrl}" width="${width}" height="${height}"/>
+      <svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}">
+        <image href="${dataUrl}" width="${canvas.width}" height="${canvas.height}"/>
       </svg>
     `;
     
@@ -576,74 +494,39 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
     link.href = url;
     link.click();
     URL.revokeObjectURL(url);
-    announce('Drawing exported as SVG');
-  };
-
-  /**
-   * Handle tool change with announcement
-   */
-  const handleToolChange = (newTool: Tool) => {
-    setTool(newTool);
-    announce(`${newTool} tool selected`);
   };
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      {/* Screen reader announcements */}
-      <div 
-        role="status" 
-        aria-live="polite" 
-        aria-atomic="true"
-        style={{ 
-          position: 'absolute', 
-          left: '-10000px', 
-          width: '1px', 
-          height: '1px', 
-          overflow: 'hidden' 
-        }}
-      >
-        {announcement}
-      </div>
-
       {/* Toolbar */}
-      <div 
-        role="toolbar" 
-        aria-label="Drawing tools"
-        style={{
-          padding: '15px',
-          background: '#f5f5f5',
-          borderRadius: '8px',
-          marginBottom: '15px',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '15px',
-          alignItems: 'center',
-          boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-        }}
-      >
+      <div style={{
+        padding: '15px',
+        background: '#f5f5f5',
+        borderRadius: '8px',
+        marginBottom: '15px',
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '15px',
+        alignItems: 'center',
+        boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+      }}>
         {/* Tools */}
-        <div role="group" aria-label="Drawing tool selection" style={{ display: 'flex', gap: '5px' }}>
+        <div style={{ display: 'flex', gap: '5px' }}>
           {(['brush', 'eraser', 'line', 'rectangle', 'circle', 'fill'] as Tool[]).map(t => (
             <button
               key={t}
-              onClick={() => handleToolChange(t)}
-              aria-label={`${t} tool`}
-              aria-pressed={tool === t}
-              title={`${t} (${t[0].toUpperCase()})`}
+              onClick={() => setTool(t)}
               style={{
                 padding: '8px 16px',
                 background: tool === t ? '#2196F3' : 'white',
                 color: tool === t ? 'white' : '#333',
-                border: tool === t ? '2px solid #1976D2' : '1px solid #ddd',
+                border: '1px solid #ddd',
                 borderRadius: '4px',
                 cursor: 'pointer',
                 textTransform: 'capitalize',
                 fontWeight: tool === t ? 'bold' : 'normal',
-                transition: 'all 0.2s',
-                outline: 'none'
+                transition: 'all 0.2s'
               }}
-              onFocus={(e) => e.currentTarget.style.boxShadow = '0 0 0 3px rgba(33, 150, 243, 0.3)'}
-              onBlur={(e) => e.currentTarget.style.boxShadow = 'none'}
             >
               {t}
             </button>
@@ -652,13 +535,11 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
 
         {/* Color Picker */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <label htmlFor="color-picker" style={{ fontWeight: '500' }}>Color:</label>
+          <label style={{ fontWeight: '500' }}>Color:</label>
           <input
-            id="color-picker"
             type="color"
             value={color}
-            onChange={(e) => setColor(e.target.value)}
-            aria-label="Select drawing color"
+            onChange={(e) => handleColorChange(e.target.value)}
             style={{
               width: '50px',
               height: '35px',
@@ -669,173 +550,135 @@ const DrawingCanvas: React.FC<DrawingCanvasProps> = ({
           />
         </div>
 
+        {/* Recent Colors */}
+        {recentColors.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <span style={{ fontSize: '12px', color: '#666' }}>Recent:</span>
+            {recentColors.map((recentColor, index) => (
+              <button
+                key={index}
+                onClick={() => setColor(recentColor)}
+                title={`Use color ${recentColor}`}
+                style={{
+                  width: '28px',
+                  height: '28px',
+                  backgroundColor: recentColor,
+                  border: color === recentColor ? '2px solid #2196F3' : '2px solid #ddd',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  padding: 0,
+                  transition: 'transform 0.1s',
+                  boxShadow: color === recentColor ? '0 0 0 2px rgba(33, 150, 243, 0.2)' : 'none'
+                }}
+                onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.1)'}
+                onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1)'}
+              />
+            ))}
+          </div>
+        )}
+
         {/* Brush Size */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <label htmlFor="brush-size" style={{ fontWeight: '500' }}>Size: {lineWidth}px</label>
+          <label style={{ fontWeight: '500' }}>Size: {lineWidth}px</label>
           <input
-            id="brush-size"
             type="range"
             min="1"
             max="50"
             value={lineWidth}
             onChange={(e) => setLineWidth(Number(e.target.value))}
-            aria-label={`Brush size: ${lineWidth} pixels`}
-            aria-valuemin={1}
-            aria-valuemax={50}
-            aria-valuenow={lineWidth}
             style={{ width: '120px' }}
           />
         </div>
 
         {/* Actions */}
-        <div role="group" aria-label="Canvas actions" style={{ display: 'flex', gap: '5px', marginLeft: 'auto' }}>
+        <div style={{ display: 'flex', gap: '5px', marginLeft: 'auto' }}>
           <button
             onClick={undo}
             disabled={historyStep <= 0}
-            aria-label="Undo (Ctrl+Z)"
-            title="Undo (Ctrl+Z)"
             style={{
               padding: '8px 16px',
               background: historyStep <= 0 ? '#ddd' : 'white',
               border: '1px solid #ddd',
               borderRadius: '4px',
-              cursor: historyStep <= 0 ? 'not-allowed' : 'pointer',
-              outline: 'none'
+              cursor: historyStep <= 0 ? 'not-allowed' : 'pointer'
             }}
-            onFocus={(e) => !e.currentTarget.disabled && (e.currentTarget.style.boxShadow = '0 0 0 3px rgba(0, 0, 0, 0.1)')}
-            onBlur={(e) => e.currentTarget.style.boxShadow = 'none'}
           >
             Undo
           </button>
           <button
             onClick={redo}
             disabled={historyStep >= history.length - 1}
-            aria-label="Redo (Ctrl+Y)"
-            title="Redo (Ctrl+Y)"
             style={{
               padding: '8px 16px',
               background: historyStep >= history.length - 1 ? '#ddd' : 'white',
               border: '1px solid #ddd',
               borderRadius: '4px',
-              cursor: historyStep >= history.length - 1 ? 'not-allowed' : 'pointer',
-              outline: 'none'
+              cursor: historyStep >= history.length - 1 ? 'not-allowed' : 'pointer'
             }}
-            onFocus={(e) => !e.currentTarget.disabled && (e.currentTarget.style.boxShadow = '0 0 0 3px rgba(0, 0, 0, 0.1)')}
-            onBlur={(e) => e.currentTarget.style.boxShadow = 'none'}
           >
             Redo
           </button>
           <button
             onClick={clearCanvas}
-            aria-label="Clear canvas"
-            title="Clear canvas"
             style={{
               padding: '8px 16px',
               background: '#f44336',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
-              cursor: 'pointer',
-              outline: 'none'
+              cursor: 'pointer'
             }}
-            onFocus={(e) => e.currentTarget.style.boxShadow = '0 0 0 3px rgba(244, 67, 54, 0.3)'}
-            onBlur={(e) => e.currentTarget.style.boxShadow = 'none'}
           >
             Clear
           </button>
           <button
             onClick={exportToPNG}
-            aria-label="Export as PNG (Ctrl+S)"
-            title="Export as PNG (Ctrl+S)"
             style={{
               padding: '8px 16px',
               background: '#4CAF50',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
-              cursor: 'pointer',
-              outline: 'none'
+              cursor: 'pointer'
             }}
-            onFocus={(e) => e.currentTarget.style.boxShadow = '0 0 0 3px rgba(76, 175, 80, 0.3)'}
-            onBlur={(e) => e.currentTarget.style.boxShadow = 'none'}
           >
             Export PNG
           </button>
           <button
             onClick={exportToSVG}
-            aria-label="Export as SVG"
-            title="Export as SVG"
             style={{
               padding: '8px 16px',
               background: '#FF9800',
               color: 'white',
               border: 'none',
               borderRadius: '4px',
-              cursor: 'pointer',
-              outline: 'none'
+              cursor: 'pointer'
             }}
-            onFocus={(e) => e.currentTarget.style.boxShadow = '0 0 0 3px rgba(255, 152, 0, 0.3)'}
-            onBlur={(e) => e.currentTarget.style.boxShadow = 'none'}
           >
             Export SVG
           </button>
         </div>
       </div>
 
-      {/* Canvas Container */}
-      <div 
-        style={{ 
-          position: 'relative', 
-          display: 'inline-block',
+      {/* Canvas */}
+      <canvas
+        ref={canvasRef}
+        style={{
           border: '2px solid #ddd',
           borderRadius: '8px',
           boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-          overflow: 'hidden'
+          cursor: tool === 'fill' ? 'crosshair' : 'crosshair',
+          touchAction: 'none'
         }}
-        role="img"
-        aria-label="Drawing canvas"
-      >
-        {/* Main Canvas */}
-        <canvas
-          ref={canvasRef}
-          style={{
-            display: 'block',
-            cursor: tool === 'fill' ? 'crosshair' : 'crosshair',
-            touchAction: 'none'
-          }}
-          aria-label="Main drawing canvas"
-        />
-        {/* Preview Overlay Canvas */}
-        <canvas
-          ref={previewCanvasRef}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            pointerEvents: 'none',
-            touchAction: 'none'
-          }}
-          aria-hidden="true"
-        />
-        {/* Invisible interaction layer */}
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%'
-          }}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={finishDrawing}
-          onMouseOut={finishDrawing}
-          onClick={handleCanvasClick}
-          onTouchStart={startDrawing}
-          onTouchMove={draw}
-          onTouchEnd={finishDrawing}
-        />
-      </div>
+        onMouseDown={startDrawing}
+        onMouseMove={draw}
+        onMouseUp={finishDrawing}
+        onMouseOut={finishDrawing}
+        onClick={handleCanvasClick}
+        onTouchStart={startDrawing}
+        onTouchMove={draw}
+        onTouchEnd={finishDrawing}
+      />
 
       {/* Help Text */}
       <div style={{
